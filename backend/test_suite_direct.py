@@ -105,7 +105,7 @@ def run_all_tests():
     assert scores_weak.overall_score < 60, "Weak resume with cliches and passive verbs should score < 60"
 
     roaster = RoastEngine()
-    roast_out = roaster.roast_resume(sample_weak_resume, target_role="Software Engineer", tone="balanced")
+    roast_out = roaster.roast_resume(sample_weak_resume)
     print(f"\nHeadline Roast: {roast_out.headline_roast}")
     print(f"Summary: {roast_out.summary}")
     print(f"Issues detected count: {len(roast_out.issues)}")

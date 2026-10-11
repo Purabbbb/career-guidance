@@ -102,29 +102,6 @@ def normalize_skill(skill: str) -> str:
     return cleaned
 
 
-# ----------------- Cached Semantic Embedding Model -----------------
-_EMBEDDING_MODEL = None
-_EMBEDDING_MODEL_LOADED = False
-
-def get_sentence_transformer_model():
-    """Load and cache SentenceTransformer model if available locally without network hang."""
-    global _EMBEDDING_MODEL, _EMBEDDING_MODEL_LOADED
-    if _EMBEDDING_MODEL_LOADED:
-        return _EMBEDDING_MODEL
-
-    try:
-        from sentence_transformers import SentenceTransformer
-        # Check local cache first to avoid slow or blocked network downloads
-        _EMBEDDING_MODEL = SentenceTransformer("all-MiniLM-L6-v2", local_files_only=True)
-    except Exception:
-        # Graceful fallback to TF-IDF / sklearn
-        _EMBEDDING_MODEL = None
-    finally:
-        _EMBEDDING_MODEL_LOADED = True
-
-    return _EMBEDDING_MODEL
-
-
 # Role to domain associations
 ROLE_DOMAINS_MAP = {
     "Data Scientist": ["data science", "machine learning", "statistics"],
@@ -380,7 +357,7 @@ class TeacherMatcher:
         for i, rec in enumerate(top_recs, start=1):
             rec.rank = i
 
-        method_note = "hybrid semantic (SentenceTransformers / TF-IDF) + skill coverage (0.40) + role relevance (0.15) ranking"
+        method_note = "hybrid semantic (TF-IDF Cosine Similarity) + skill coverage (0.40) + role relevance (0.15) ranking"
 
         return TeacherRecommendResponse(
             status="success",

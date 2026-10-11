@@ -6,7 +6,7 @@ import Dashboard from './pages/dashboard.jsx'
 import TeacherDashboard from './pages/teacher-dashboard.jsx'
 import TeacherResumeAnalysis from './pages/teacher-resume-analysis.jsx'
 import LandingPage from './pages/LandingPage.jsx'
-import { supabase } from './lib/supabaseClient.js'
+import { supabase, isSupabaseConfigured } from './lib/supabaseClient.js'
 
 function useSessionState() {
   const [isChecking, setIsChecking] = useState(true)
@@ -15,11 +15,22 @@ function useSessionState() {
   useEffect(() => {
     let active = true
 
-    supabase.auth.getSession().then(({ data }) => {
-      if (!active) return
-      setSession(data.session)
+    if (!isSupabaseConfigured) {
       setIsChecking(false)
-    })
+      return
+    }
+
+    supabase.auth.getSession()
+      .then(({ data }) => {
+        if (!active) return
+        setSession(data?.session || null)
+        setIsChecking(false)
+      })
+      .catch((err) => {
+        console.warn('Auth check failed:', err)
+        if (!active) return
+        setIsChecking(false)
+      })
 
     const {
       data: { subscription },
@@ -30,7 +41,7 @@ function useSessionState() {
 
     return () => {
       active = false
-      subscription.unsubscribe()
+      subscription?.unsubscribe?.()
     }
   }, [])
 

@@ -1,98 +1,94 @@
 """
 bot.py
 ------
-PIPELINE STEP 9: Chatbot with DistilBERT Intent Classification
+PIPELINE STEP 9: Chatbot with Groq API (Llama 3.3) & Keyword Fallback
 
 Architecture:
-  1. Intent Classification — fine-tuned DistilBERT model
-     (distilbert-base-uncased, fine-tuned on 630 career chatbot examples)
-     Falls back to keyword classifier if model is not available.
+  1. Groq API — powered by ultra-fast Llama 3 (llama-3.3-70b-versatile).
+     Answers career guidance questions contextually using the candidate's resume analysis.
 
-  2. Response Generation — each intent has a dedicated handler that reads
-     the actual resume analysis data and builds a specific, accurate response.
+  2. Keyword Intent Classifier — reliable deterministic fallback if GROQ_API_KEY is not set or network fails.
 
 Intent classes (9):
   GREETING, BEST_ROLE, SKILLS, GAP, COURSES, JOBS, PROFILE, SALARY, IMPROVE
-
-Model location: backend/chatbot/intent_classifier/
 """
 
 import os
 import json
 import random
-from pathlib import Path
-
-# ── Model loading ─────────────────────────────────────────────────────────────
-
-MODEL_DIR = Path(__file__).parent / "intent_classifier"
-_model = None
-_tokenizer = None
-_label_map = None
-_device = None
+import requests
+from typing import Optional
 
 
-def _load_model():
-    """
-    Loads the fine-tuned DistilBERT model on first call.
-    Uses lazy loading so startup time is not affected.
-    Falls back to keyword classifier if model files are missing.
-    """
-    global _model, _tokenizer, _label_map, _device
-
-    if _model is not None:
-        return True  # already loaded
-
-    if not MODEL_DIR.exists():
-        print(f"[bot.py] Model directory not found at {MODEL_DIR}. Using keyword fallback.")
-        return False
+def _generate_with_groq(user_message: str, analysis: dict, history: list) -> Optional[dict]:
+    groq_key = os.getenv("GROQ_API_KEY", "").strip()
+    if not groq_key:
+        return None
 
     try:
-        import torch
-        from transformers import DistilBertTokenizerFast, DistilBertForSequenceClassification
+        entities = analysis.get("entities", {})
+        name = entities.get("name", "")
+        skills = analysis.get("skills", {}).get("matched_skills", [])
+        top_roles = analysis.get("job_roles", {}).get("top_roles", [])
+        gaps = analysis.get("gap_analysis", {}).get("missing_skills", [])
+        courses = analysis.get("courses", {}).get("recommendations", [])
 
-        _device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        roles_summary = ", ".join([f"{r.get('role')} ({r.get('score')}%)" for r in top_roles[:4]]) if top_roles else "Not classified"
+        skills_summary = ", ".join(skills[:20]) if skills else "None detected"
+        gaps_summary = ", ".join(gaps[:12]) if gaps else "None"
+        courses_summary = ", ".join([c.get("title", "") for c in courses[:4]]) if courses else "None"
 
-        _tokenizer = DistilBertTokenizerFast.from_pretrained(str(MODEL_DIR))
-        _model = DistilBertForSequenceClassification.from_pretrained(str(MODEL_DIR))
-        _model.to(_device)
-        _model.eval()
+        system_prompt = f"""You are MargDarshak's AI Career Mentor, an expert career advisor.
+Your role is to guide candidates using their verified resume analysis data.
 
-        with open(MODEL_DIR / "label_map.json") as f:
-            _label_map = json.load(f)
+CANDIDATE PROFILE:
+- Name: {name or 'Candidate'}
+- Top Matched Roles: {roles_summary}
+- Skills Detected: {skills_summary}
+- Skill Gaps: {gaps_summary}
+- Recommended Courses: {courses_summary}
 
-        print(f"[bot.py] DistilBERT intent classifier loaded on {_device}.")
-        return True
+INSTRUCTIONS:
+1. Provide concise, clear, encouraging, and direct answers (2 to 4 sentences).
+2. Reference their actual skills and matches when relevant.
+3. If they ask about next steps, roadmap, or salary, give concrete practical guidance.
+4. Keep the tone professional, friendly, and empowering."""
 
+        messages = [{"role": "system", "content": system_prompt}]
+
+        # Add recent conversation history if provided
+        if history and isinstance(history, list):
+            for h in history[-4:]:
+                if isinstance(h, dict) and "role" in h and "content" in h:
+                    messages.append({"role": h["role"], "content": h["content"]})
+
+        messages.append({"role": "user", "content": user_message})
+
+        resp = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {groq_key}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": "llama-3.3-70b-versatile",
+                "messages": messages,
+                "temperature": 0.7,
+                "max_tokens": 500
+            },
+            timeout=15
+        )
+        if resp.status_code == 200:
+            content = resp.json()["choices"][0]["message"]["content"].strip()
+            return {
+                "response": content,
+                "intent": "GROQ_CHAT",
+                "confidence": 1.0,
+                "method": "groq (llama-3.3-70b-versatile)"
+            }
     except Exception as e:
-        print(f"[bot.py] Could not load DistilBERT model: {e}. Using keyword fallback.")
-        _model = None
-        return False
-
-
-def _classify_with_bert(message: str) -> tuple[str, float]:
-    """
-    Runs inference through the fine-tuned DistilBERT model.
-    Returns (intent_label, confidence_score).
-    """
-    import torch
-
-    inputs = _tokenizer(
-        message,
-        return_tensors="pt",
-        truncation=True,
-        padding=True,
-        max_length=64
-    )
-    inputs = {k: v.to(_device) for k, v in inputs.items()}
-
-    with torch.no_grad():
-        outputs = _model(**inputs)
-        probs = torch.softmax(outputs.logits, dim=1)
-        pred_idx = torch.argmax(probs, dim=1).item()
-        confidence = probs[0][pred_idx].item()
-
-    intent = _label_map["labels"][pred_idx]
-    return intent, round(confidence, 4)
+        print(f"[bot.py] Groq request failed: {e}. Falling back to keywords...")
+    return None
 
 
 # ── Keyword fallback classifier (identical to original) ───────────────────────
@@ -371,29 +367,24 @@ HANDLERS = {
 
 def chat(user_message: str, analysis: dict, history: list) -> dict:
     """
-    Classifies intent using fine-tuned DistilBERT, then generates
-    a data-driven response from the resume analysis.
-
-    Falls back to keyword classifier if the model is unavailable.
+    Classifies and responds using Groq API (Llama 3.3).
+    Falls back to deterministic keyword classifier if GROQ_API_KEY is not set or network fails.
 
     Args:
         user_message: User input string
         analysis: Full resume analysis dict from /analyze endpoint
-        history: Previous messages (kept for interface compatibility)
+        history: Previous messages
 
     Returns:
         dict with response text, intent, confidence, and method used
     """
-    model_available = _load_model()
+    # 1. Try Groq API first
+    groq_result = _generate_with_groq(user_message, analysis, history)
+    if groq_result:
+        return groq_result
 
-    if model_available:
-        intent, confidence = _classify_with_bert(user_message)
-        method = f"distilbert (confidence: {confidence:.2%})"
-    else:
-        intent = _classify_with_keywords(user_message)
-        confidence = None
-        method = "keyword_fallback"
-
+    # 2. Deterministic keyword fallback
+    intent = _classify_with_keywords(user_message)
     if intent in HANDLERS:
         response = HANDLERS[intent](analysis)
     else:
@@ -402,6 +393,6 @@ def chat(user_message: str, analysis: dict, history: list) -> dict:
     return {
         "response":   response,
         "intent":     intent,
-        "confidence": confidence,
-        "method":     method
+        "confidence": None,
+        "method":     "keyword_fallback"
     }

@@ -23,16 +23,20 @@ Safety rules:
 import os
 import json
 import random
+import requests
 from typing import Dict, Any, Optional, List
 
 
 class LLMClient:
     def __init__(self):
-        self.gemini_key = os.getenv("GEMINI_API_KEY", "")
-        self.openai_key = os.getenv("OPENAI_API_KEY", "")
+        self.groq_key = os.getenv("GROQ_API_KEY", "").strip()
+        self.gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
+        self.openai_key = os.getenv("OPENAI_API_KEY", "").strip()
         self.provider = "none"
 
-        if self.gemini_key:
+        if self.groq_key:
+            self.provider = "groq"
+        elif self.gemini_key:
             self.provider = "gemini"
         elif self.openai_key:
             self.provider = "openai"
@@ -67,15 +71,26 @@ class LLMClient:
         }
         """
         
-        # Try LLM provider if available
-        if self.provider == "gemini":
+        # Try Groq first if key available
+        if self.provider == "groq":
+            try:
+                return self._generate_with_groq(
+                    resume_text, issues, extracted_skills, extracted_projects, extracted_experience
+                )
+            except Exception as e:
+                print(f"[LLMClient] Groq generation failed: {e}. Falling back...")
+
+        # Try Gemini
+        if self.gemini_key:
             try:
                 return self._generate_with_gemini(
                     resume_text, issues, extracted_skills, extracted_projects, extracted_experience
                 )
             except Exception:
                 pass
-        elif self.provider == "openai":
+
+        # Try OpenAI
+        if self.openai_key:
             try:
                 return self._generate_with_openai(
                     resume_text, issues, extracted_skills, extracted_projects, extracted_experience
@@ -87,6 +102,75 @@ class LLMClient:
         return self._generate_savage_roast_deterministic(
             resume_text, issues, extracted_skills, extracted_projects, extracted_experience
         )
+
+    def _generate_with_groq(
+        self,
+        resume_text: str,
+        issues: List[Dict[str, Any]],
+        extracted_skills: Optional[List[str]],
+        extracted_projects: Optional[List[str]],
+        extracted_experience: Optional[List[str]]
+    ) -> Dict[str, Any]:
+        """Query Groq API (Llama 3) for structured savage roast."""
+        issues_json = json.dumps([
+            {"section": i.get("section"), "evidence": i.get("evidence")} 
+            for i in issues[:5]
+        ])
+
+        prompt = f"""You are MargDarshak's Resume Roast AI. Generate an EXTREMELY WITTY, SAVAGE, BRUTAL resume roast.
+
+RULES:
+1. ALWAYS SAVAGE tone - no mercy, no softness
+2. EVERY joke must reference ACTUAL resume content
+3. Use dark humor, sarcasm, absurd comparisons, exaggeration, irony
+4. Roast the RESUME WRITING, never the person
+5. Be funny and intelligent, not just rude
+6. Return ONLY valid JSON (no markdown formatting, no code blocks)
+
+RESUME EVIDENCE:
+Issues: {issues_json}
+Skills mentioned: {json.dumps(extracted_skills[:10] if extracted_skills else [])}
+Projects listed: {json.dumps(extracted_projects[:3] if extracted_projects else [])}
+Experience: {json.dumps(extracted_experience[:2] if extracted_experience else [])}
+
+Resume sample: {resume_text[:800]}
+
+Generate JSON matching this exact structure:
+{{
+    "opening_roast": "String - strong opening joke referencing actual resume content",
+    "roast_sections": [
+        {{"joke": "String - specific witty critique", "source": "String - Resume section", "evidence": "String - actual observation"}},
+        {{"joke": "...", "source": "...", "evidence": "..."}}
+    ],
+    "worst_offender_roast": "String - the funniest/most brutal observation",
+    "closing_verdict": "String - memorable final personalized punchline"
+}}"""
+
+        headers = {
+            "Authorization": f"Bearer {self.groq_key}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": "llama-3.3-70b-versatile",
+            "messages": [
+                {"role": "system", "content": "You are a witty, evidence-based resume roast generator. Always output valid JSON only."},
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": 0.85,
+            "response_format": {"type": "json_object"}
+        }
+
+        resp = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=25
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        raw_text = data["choices"][0]["message"]["content"].strip()
+        raw_text = raw_text.replace("```json", "").replace("```", "").strip()
+        return json.loads(raw_text)
 
     def _generate_with_gemini(
         self,
